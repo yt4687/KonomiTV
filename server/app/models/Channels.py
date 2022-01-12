@@ -217,7 +217,8 @@ class Channels(models.Model):
         for service in services:
 
             # type が 1 以外のサービス（＝ワンセグやデータ放送 (type:192) など）を弾く
-            if service['service_type'] != 1:
+            # ラジオは将来的には読み込みを選択できるようにしたい
+            if service['service_type'] != 1 and service['service_type'] != 2:
                 continue
 
             # 不明なネットワーク ID のチャンネルを弾く
