@@ -27,7 +27,7 @@ class LiveEncodingTask():
         self.max_retry_count = 5  # 5 回まで
 
 
-    def buildFFmpegOptions(self, quality:str, is_dualmono:bool=False) -> list:
+    def buildFFmpegOptions(self, quality:str, network_id, is_dualmono:bool=False) -> list:
         """
         FFmpeg に渡すオプションを組み立てる
 
@@ -50,35 +50,38 @@ class LiveEncodingTask():
         # ストリームのマッピング
         # 音声切り替えのため、主音声・副音声両方をエンコード後の TS に含む
 
-        ## 通常放送・音声多重放送向け
-        ## 副音声が検出できない場合にエラーにならないよう、? をつけておく
-        if is_dualmono is False:
-            options.append('-map 0:v:0 -map 0:a:0 -map 0:a:1 -map 0:d? -ignore_unknown')
-
-        ## デュアルモノ向け（Lが主音声・Rが副音声）
-        else:
-            ## 1440x1080 と 1920x1080 が混在しているので、1080p だけリサイズする解像度を特殊な設定に
-            scale = 'scale=-2:1080' if quality == '1080p' else f'scale={QUALITY[quality]["width"]}:{QUALITY[quality]["height"]}'
-            # 参考: https://github.com/l3tnun/EPGStation/blob/master/config/enc3.js
-            # -filter_complex を使うと -vf や -af が使えなくなるため、デュアルモノのみ -filter_complex に -vf や -af の内容も入れる
-            options.append(f'-filter_complex yadif=0:-1:1,{scale};volume=2.0,channelsplit[FL][FR]')
-            ## Lを主音声に、Rを副音声にマッピング
-            options.append('-map 0:v:0 -map [FL] -map [FR] -map 0:d? -ignore_unknown')
-
         # フラグ
         ## 主に FFmpeg の起動を高速化するための設定
         max_interleave_delta = round(1 + self.retry_count)
         options.append(f'-fflags nobuffer -flags low_delay -max_delay 250000 -max_interleave_delta {max_interleave_delta} -threads auto')
 
-        # 映像
-        options.append(f'-vcodec libx264 -flags +cgop -vb {QUALITY[quality]["video_bitrate"]} -maxrate {QUALITY[quality]["video_bitrate_max"]}')
-        options.append('-aspect 16:9 -r 30000/1001 -g 60 -preset veryfast -profile:v main')
-        if is_dualmono is False:  # デュアルモノ以外
-            ## 1440x1080 と 1920x1080 が混在しているので、1080p だけリサイズする解像度を特殊な設定に
-            if quality == '1080p':
-                options.append('-vf yadif=0:-1:1,scale=-2:1080')
+        # 映像ストリームがある時の設定
+        ## ラジオ放送では映像ストリームの処理は必要ない
+        if network_id != 1:
+            ## 通常放送・音声多重放送向け
+            ## 副音声が検出できない場合にエラーにならないよう、? をつけておく
+            if is_dualmono is False:
+                options.append('-map 0:v:0 -map 0:a:0 -map 0:a:1 -map 0:d? -ignore_unknown')
+
+            ## デュアルモノ向け（Lが主音声・Rが副音声）
             else:
-                options.append(f'-vf yadif=0:-1:1,scale={QUALITY[quality]["width"]}:{QUALITY[quality]["height"]}')
+                ## 1440x1080 と 1920x1080 が混在しているので、1080p だけリサイズする解像度を特殊な設定に
+                scale = 'scale=-2:1080' if quality == '1080p' else f'scale={QUALITY[quality]["width"]}:{QUALITY[quality]["height"]}'
+                # 参考: https://github.com/l3tnun/EPGStation/blob/master/config/enc3.js
+                # -filter_complex を使うと -vf や -af が使えなくなるため、デュアルモノのみ -filter_complex に -vf や -af の内容も入れる
+                options.append(f'-filter_complex yadif=0:-1:1,{scale};volume=2.0,channelsplit[FL][FR]')
+                ## Lを主音声に、Rを副音声にマッピング
+                options.append('-map 0:v:0 -map [FL] -map [FR] -map 0:d? -ignore_unknown')
+
+            # 映像
+            options.append(f'-vcodec libx264 -flags +cgop -vb {QUALITY[quality]["video_bitrate"]} -maxrate {QUALITY[quality]["video_bitrate_max"]}')
+            options.append('-aspect 16:9 -r 30000/1001 -g 60 -preset veryfast -profile:v main')
+            if is_dualmono is False:  # デュアルモノ以外
+                ## 1440x1080 と 1920x1080 が混在しているので、1080p だけリサイズする解像度を特殊な設定に
+                if quality == '1080p':
+                    options.append('-vf yadif=0:-1:1,scale=-2:1080')
+                else:
+                    options.append(f'-vf yadif=0:-1:1,scale={QUALITY[quality]["width"]}:{QUALITY[quality]["height"]}')
 
         # 音声
         ## 音声が 5.1ch かどうかに関わらず、ステレオにダウンミックスする
@@ -212,7 +215,9 @@ class LiveEncodingTask():
         program_present:Programs = RunAwait(channel.getCurrentAndNextProgram())[0]
 
         ## 番組情報が取得できなければ（放送休止中など）ここで Offline にしてエンコードタスクを停止する
-        if program_present is None:
+        ## スターデジオは番組情報が取れないことが多いので(特に午後)休止になっていても無視してストリームを開始する
+        ## 放送大学ラジオはEPGが正しく返ってくるので制御しない
+        if program_present is None and channel.network_id != 1 :
             time.sleep(0.5)  # ちょっと待つのがポイント
             livestream.setStatus('Offline', 'この時間は放送を休止しています。')
             return
@@ -398,15 +403,24 @@ class LiveEncodingTask():
         else:
             real_quality = quality
 
+        ## ラジオ放送と通常の放送か判断してフラグを付ける
+        ## 放送大学ラジオは531、スターデジオはネットワークIDが1
+        if channel.service_id == 531:
+            picture_control = 1
+        elif channel.network_id == 1:
+            picture_control = channel.network_id
+        else:
+            picture_control = 0
+
         # FFmpeg
-        if encoder_type == 'FFmpeg':
+        if encoder_type == 'FFmpeg' or picture_control == 1:
 
             # オプションを取得
             # 現在放送中の番組がデュアルモノの場合、デュアルモノ用のエンコードオプションを取得
             #if program_present.primary_audio_type == '1/0+1/0モード(デュアルモノ)':
             #    encoder_options = self.buildFFmpegOptions(real_quality, is_dualmono=True)
             #else:
-            encoder_options = self.buildFFmpegOptions(real_quality, is_dualmono=False)
+            encoder_options = self.buildFFmpegOptions(real_quality, picture_control, is_dualmono=False)
             Logging.info(f'LiveStream:{livestream.livestream_id} FFmpeg Commands:\nffmpeg {" ".join(encoder_options)}')
 
             # プロセスを非同期で作成・実行
@@ -419,7 +433,7 @@ class LiveEncodingTask():
             )
 
         # HWEncC
-        elif encoder_type == 'QSVEncC' or encoder_type == 'NVEncC' or encoder_type == 'VCEEncC':
+        elif encoder_type == 'QSVEncC' or encoder_type == 'NVEncC' or encoder_type == 'VCEEncC' and picture_control != 1:
 
             # オプションを取得
             # 現在放送中の番組がデュアルモノの場合、デュアルモノ用のエンコードオプションを取得
@@ -523,9 +537,9 @@ class LiveEncodingTask():
                                     livestream.setStatus('Standby', 'チューナーを起動しています…')
                             elif 'arib parser was created' in line or 'Invalid frame dimensions 0x0.' in line:
                                 livestream.setStatus('Standby', 'エンコードを開始しています…')
-                            elif 'frame=    1 fps=0.0 q=0.0' in line:
+                            elif 'frame=    1 fps=0.0 q=0.0' in line or 'size=       0kB time=00:00:00.00' in line:
                                 livestream.setStatus('Standby', 'バッファリングしています…')
-                            elif 'frame=' in line:
+                            elif 'frame=' in line or 'bitrate=' in line:
                                 livestream.setStatus('ONAir', 'ライブストリームは ONAir です。')
                         ## HWEncC
                         elif encoder_type == 'QSVEncC' or encoder_type == 'NVEncC' or encoder_type == 'VCEEncC':
