@@ -280,14 +280,14 @@ class LiveEncodingTask():
             try:
                 response = requests.get(mirakurun_stream_api_url, headers={'X-Mirakurun-Priority': '0'}, stream=True, timeout=15)
             except (requests.exceptions.ConnectionError, requests.exceptions.ReadTimeout):
-                # 番組名に「放送休止」などが入っていれば停波によるものとみなし、そうでないならチューナーの起動に失敗したものとする
+                # 番組名に「放送休止」などが入っていれば停波によるものとみなし、そうでないならチューナーへの接続に失敗したものとする
                 if ('放送休止' in program_present.title) or \
                    ('放送終了' in program_present.title) or \
                    ('休止' in program_present.title) or \
                    ('停波' in program_present.title):
                     livestream.setStatus('Offline', 'この時間は放送を休止しています。')
                 else:
-                    livestream.setStatus('Offline', 'チューナーの起動に失敗したため、ライブストリームを開始できません。')
+                    livestream.setStatus('Offline', 'チューナーへの接続に失敗したため、ライブストリームを開始できません。')
                 return
 
         # EDCB バックエンド
@@ -301,9 +301,10 @@ class LiveEncodingTask():
             is_tuner_opened = RunAwait(tuner.open())
 
             # チューナーの起動に失敗した
+            # ほとんどがチューナー不足によるものなので、ステータス詳細でもそのように表示する
             # 成功時は tuner.close() するか予約などに割り込まれるまで起動しつづけるので注意
             if is_tuner_opened is False:
-                livestream.setStatus('Offline', 'チューナーの起動に失敗したため、ライブストリームを開始できません。')
+                livestream.setStatus('Offline', 'チューナー不足のため、ライブストリームを開始できません。')
                 return
 
             # チューナーをロックする
@@ -467,8 +468,9 @@ class LiveEncodingTask():
             while True:
 
                 # エンコーダーの出力をライブストリームに書き込む
-                # R/W バッファ: 188B (TS Packet Size) * 256 = 48128B
-                livestream.write(encoder.stdout.read(48128))
+                # R/W バッファ: 188B (TS Packet Size) * 128 = 24064B
+                # エンコードでかなりデータ量が減るので、reader よりもバッファを減らしてみる
+                livestream.write(encoder.stdout.read(24064))
 
                 # エンコーダープロセスが終了していたらループを抜ける
                 if encoder.poll() is not None:
@@ -639,8 +641,8 @@ class LiveEncodingTask():
             ## FFmpeg
             if encoder_type == 'FFmpeg':
                 if 'Stream map \'0:v:0\' matches no streams.' in line:
-                    # 主にチューナー不足が原因のエラーのため、エンコーダーの再起動は行わない
-                    livestream.setStatus('Offline', 'チューナー不足のため、ライブストリームを開始できません。')
+                    # 何らかの原因で tsreadex から TS データが受信できなかったことによるエラーのため、エンコーダーの再起動は行わない
+                    livestream.setStatus('Offline', 'ライブストリームの受信に失敗したため、ライブストリームを開始できません。')
                     break
                 elif 'Conversion failed!' in line:
                     # 捕捉されないエラー
@@ -653,8 +655,8 @@ class LiveEncodingTask():
             ## HWEncC
             elif encoder_type == 'QSVEncC' or encoder_type == 'NVEncC' or encoder_type == 'VCEEncC':
                 if 'error finding stream information.' in line:
-                    # 主にチューナー不足が原因のエラーのため、エンコーダーの再起動は行わない
-                    livestream.setStatus('Offline', 'チューナー不足のため、ライブストリームを開始できません。')
+                    # 何らかの原因で tsreadex から TS データが受信できなかったことによるエラーのため、エンコーダーの再起動は行わない
+                    livestream.setStatus('Offline', 'ライブストリームの受信に失敗したため、ライブストリームを開始できません。')
                     break
                 elif 'due to the NVIDIA\'s driver limitation.' in line:
                     # NVEncC で、同時にエンコードできるセッション数 (Geforceだと3つ) を全て使い果たしている時のエラー
