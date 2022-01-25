@@ -455,6 +455,13 @@ class LiveEncodingTask():
         # ***** エンコーダーの出力の書き込み *****
 
         def writer():
+        
+            ## キャッシュの設定をラジオ用と映像用で切り替え
+            ## picture_controlは上のエンコードコマンド作成の部分から継承
+            if picture_control == 1:
+                stream_cache = 20480
+            else:
+                stream_cache = 48128
 
             # 非同期でエンコーダーから受けた出力を随時 Queue に書き込む
             while True:
